@@ -1,0 +1,212 @@
+# Virtus fork'unun imaj derlemesi: ghcr.io/virtus-digital/paperclip:<surum>
+#
+# NEDEN AYRI BIR WORKFLOW
+#   Deploy upstream'in yayinladigi imaji (ghcr.io/paperclipai/paperclip)
+#   KULLANMIYOR; guncellemeler kontrollu olsun diye imaj bu fork'tan derleniyor.
+#   Upstream'in kendi workflow'lari bu fork'ta KOSMUYOR:
+#     - varsayilan dal `virtus`, upstream dosyalarini tasimiyor (yalniz bu
+#       workflow + README.md) => zamanlanmis isler ve dispatch'ler yok
+#     - upstream etiketleri `upstream/` onekiyle aynalaniyor; upstream'in
+#       docker.yml'i `v*`, `nightly/v*`, `beta/v*` etiketlerinde tetikleniyor,
+#       `upstream/v*` bunlarin hicbirine uymuyor
+#     - fork'ta `master` dali YOK => upstream'in `push: branches: master`
+#       tetikleyicileri tetiklenecek bir dal bulamiyor
+#   Yordam: README.md.
+#
+# KAYNAK KAPISI
+#   Derlenen agac, upstream'in AYNI adli etiketinin commit'i olmak ZORUNDA.
+#   Aynalanan etiket ayrisirsa (fork'a yama girdiyse, yanlis sha aynalandiysa)
+#   derleme durur. Yamali bir surum gerekirse bu kapi bilerek degistirilir,
+#   sessizce atlanmaz.
+#
+# DEGISMEZLIK
+#   Ayni etiket ikinci kez derlenmez: imaj etiketi varsa is kirmizi yanar.
+#   Deploy etiket + digest ile sabitledigi icin bir etiketin icerigi yerinde
+#   degismemeli.
+#
+# Derleme adimlari upstream'in docker.yml'inden (v2026.916.1) alindi: kilit
+# dosyasi tazeleme, disk bosaltma, `--target production`, uc build-arg ve
+# sema etiketleri. Farklar: yalniz linux/amd64 (fra node'lari amd64), tek
+# is (manifest birlestirme yok), surum etiketten verilir (git describe
+# `upstream/` onekli etiketi `v*` desenine uydurmadigi icin bos donerdi).
+name: imaj
+
+on:
+  workflow_dispatch:
+    inputs:
+      surum:
+        description: "Upstream surum etiketi (or. v2026.916.1). Bu fork'ta upstream/<surum> olarak aynalanmis olmali."
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: imaj-${{ inputs.surum }}
+  cancel-in-progress: false
+
+jobs:
+  derle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SURUM: ${{ inputs.surum }}
+      IMAJ: ghcr.io/virtus-digital/paperclip
+      UPSTREAM: https://github.com/paperclipai/paperclip
+    steps:
+      - name: Girdiyi dogrula ve kaynagi coz
+        id: kaynak
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$SURUM" | grep -Eq '^v[0-9]{4}\.[0-9]+\.[0-9]+$'; then
+            echo "gecersiz surum: '$SURUM' (beklenen bicim: v2026.916.1)" >&2
+            exit 1
+          fi
+          # Etiket hafif ya da aciklamali olabilir: ^{} varsa commit odur.
+          coz() {
+            local satirlar
+            satirlar="$(git ls-remote "$1" "refs/tags/$2" "refs/tags/$2^{}")"
+            printf '%s\n' "$satirlar" | awk -v r="refs/tags/$2^{}" '$2 == r { print $1; f = 1 } END { if (!f) exit 1 }' \
+              || printf '%s\n' "$satirlar" | awk '{ print $1; exit }'
+          }
+          fork="$(coz "https://github.com/${GITHUB_REPOSITORY}" "upstream/${SURUM}")"
+          ust="$(coz "$UPSTREAM" "$SURUM")"
+          echo "fork   upstream/${SURUM} -> ${fork:-<yok>}"
+          echo "upstream ${SURUM}        -> ${ust:-<yok>}"
+          if [ -z "$fork" ] || [ -z "$ust" ]; then
+            echo "etiket bulunamadi (fork ya da upstream)" >&2
+            exit 1
+          fi
+          if [ "$fork" != "$ust" ]; then
+            echo "KAYNAK AYRISTI: fork etiketi upstream etiketiyle ayni commit degil" >&2
+            exit 1
+          fi
+          echo "commit=$fork" >> "$GITHUB_OUTPUT"
+          echo "version=${SURUM#v}" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiket daha once yayinlanmis mi
+        env:
+          VERSION: ${{ steps.kaynak.outputs.version }}
+        run: |
+          set -euo pipefail
+          if docker manifest inspect "${IMAJ}:${VERSION}" > /dev/null 2>&1; then
+            echo "${IMAJ}:${VERSION} zaten var; ayni etiket yeniden derlenmez" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.kaynak.outputs.commit }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      # Upstream'in docker.yml'i ile ayni adim: Dockerfile `--frozen-lockfile`
+      # ile kuruyor, kilit dosyasi paket meta verisinin gerisindeyse derleme
+      # duser. Yalniz pnpm-lock.yaml degisebilir, baska dosya degisirse durur.
+      - name: Refresh lockfile for Docker build context
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          changed="$(git status --porcelain)"
+          if [ -z "$changed" ]; then
+            echo "Lockfile already matches package metadata."
+            echo "- kilit dosyasi: degismedi" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "- kilit dosyasi: derleme baglaminda TAZELENDI (upstream deseni)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h /
+          pnpm store prune || true
+          sudo apt-get clean || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Compute schema migration labels
+        id: schema
+        run: |
+          set -euo pipefail
+          last=$(ls packages/db/src/migrations/*.sql | sed 's|.*/||' | LC_ALL=C sort | tail -1)
+          count=$(ls packages/db/src/migrations/*.sql | wc -l | tr -d ' ')
+          echo "last=${last}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          build-args: |
+            PAPERCLIP_BUILD_VERSION=${{ steps.kaynak.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ steps.kaynak.outputs.commit }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.kaynak.outputs.epoch }}
+          tags: ${{ env.IMAJ }}:${{ steps.kaynak.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.kaynak.outputs.commit }}
+            org.opencontainers.image.version=${{ steps.kaynak.outputs.version }}
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+          push: true
+          cache-from: type=registry,ref=${{ env.IMAJ }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAJ }}:buildcache,mode=max
+
+      - name: Ozet
+        env:
+          VERSION: ${{ steps.kaynak.outputs.version }}
+          COMMIT: ${{ steps.kaynak.outputs.commit }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          {
+            echo "## ${IMAJ}:${VERSION}"
+            echo
+            echo "- kaynak: upstream/${SURUM} = \`${COMMIT}\` (upstream ${SURUM} ile ayni commit)"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- deploy referansi: \`${IMAJ}:${VERSION}@${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
