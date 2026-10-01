@@ -147,16 +147,22 @@ jobs:
           ref: ${{ steps.kaynak.outputs.commit }}
           persist-credentials: false
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-          run_install: false
-
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      # pnpm/action-setup KULLANILMIYOR: v6 `@pnpm/exe`'nin tek dosyalik
+      # ikilisini kuruyor ve o ikili `libatomic.so.1` istiyor. ARC'nin
+      # actions-runner:2.337.0 imajinda bu kutuphane yok; ilk ARC kosusu
+      # (36881514548) "error while loading shared libraries: libatomic.so.1"
+      # ile dustu. npm paketi saf JS, ek kutuphane istemiyor. Surum
+      # upstream'in docker.yml'indekiyle ayni.
+      - name: Setup pnpm
+        run: |
+          set -euo pipefail
+          npm install --global pnpm@9.15.4
+          pnpm --version
 
       # Upstream'in docker.yml'i ile ayni adim: Dockerfile `--frozen-lockfile`
       # ile kuruyor, kilit dosyasi paket meta verisinin gerisindeyse derleme
