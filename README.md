@@ -43,6 +43,25 @@ gh api orgs/Virtus-digital/actions/runner-groups/3 --jq '.selected_workflows'
 Dış katkıcıların PR'larında workflow'lar onaysız koşmuyor
 (`fork-pr-contributor-approval: all_external_contributors`).
 
+## Kim ne yapabilir
+
+Repoda yetkili tek kişi repo admin'i (2026-10-01'de ölçüldü: org'un
+varsayılan repo izni `none`, ekip ya da dış katkıcı yok). Org'un bütün
+repolarına erişen App'ler de admin'in izni olmadan bir şey değiştiremesin
+diye:
+
+| Kural | Ne |
+|---|---|
+| ruleset `dallar-yalniz-admin` | bütün dallar: oluşturma, güncelleme, silme, force-push yalnız admin |
+| ruleset `etiketler-yalniz-admin` | bütün etiketler: oluşturma, taşıma, silme yalnız admin |
+| `imaj.yml` → `if:` | derlemeyi yalnız listedeki kullanıcı başlatabilir; başkası tetiklerse iş `skipped` olur, runner açılmaz |
+
+Issue, wiki, Projects ve tartışmalar kapalı.
+
+```sh
+gh api repos/Virtus-digital/paperclip/rulesets --jq '.[] | "\(.name) \(.target) \(.enforcement)"'
+```
+
 ## Güncelleme yordamı
 
 1. Upstream sürüm notlarını oku: <https://github.com/paperclipai/paperclip/releases>.

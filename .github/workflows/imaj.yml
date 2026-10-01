@@ -57,6 +57,18 @@ concurrency:
 
 jobs:
   derle:
+    # TETIKLEYEN KAPISI: yalniz bu listedeki kullanicilar derleme baslatabilir.
+    #   Org'un butun repolarina erisen ve `actions: write` tasiyan bir App
+    #   (olculdu 2026-10-01: `slack`) bu workflow'u dispatch edebiliyordu.
+    #   Kosul is duzeyinde: yetkisiz tetiklemede is `skipped` olur ve ARC'den
+    #   runner HIC istenmez (pod acilmaz). `actor` ve `triggering_actor`
+    #   ikisi de bakiliyor: yeniden kosturmada (re-run) tetikleyen degisebilir.
+    #   Listeyi degistirmek bu dosyayi degistirmek demek: `virtus` dalina
+    #   push yalniz repo admin'ine acik (ruleset `dallar-yalniz-admin`) ve
+    #   workflow dosyasi `workflows` izni istiyor.
+    if: >-
+      contains(fromJSON('["Melihunlu"]'), github.actor) &&
+      contains(fromJSON('["Melihunlu"]'), github.triggering_actor)
     runs-on: virtusdigital-arc-paperclip
     # dind 3 CPU ile sinirli (upstream'in runner'i 4 vCPU); sure OLCULMEDI.
     timeout-minutes: 120
