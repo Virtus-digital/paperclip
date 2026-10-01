@@ -25,6 +25,24 @@ Bilerek böyle kuruldu:
 | Etiketler `upstream/` önekli | Upstream'in `docker.yml`'i `v*`, `nightly/v*`, `beta/v*` etiketlerinde tetikleniyor. Aynı adla aynalanan bir etiket o workflow'u bu fork'ta koşturur ve imajı yanlış yoldan yayımlar. |
 | Varsayılan dal upstream dosyası taşımıyor | Zamanlanmış upstream işleri (`schedule`) yalnız varsayılan daldan koşar. |
 
+## Derleme nerede koşuyor
+
+Virtus ARC'de, GitHub'ın kendi runner'larında değil. Bu depo public olduğu
+için org'un ana ARC grubu (`Default`) onu çalıştırmıyor. Derleme kendi
+grubunda (`paperclip-imaj`) ve kendi scale set'inde koşuyor:
+`Virtus-digital/deploy` → `platform-fra/arc-runners-paperclip/`.
+
+Grup yalnız `.github/workflows/imaj.yml@refs/heads/virtus`'a açık. Bu
+dosyanın adı ya da dalı değişirse grubun `selected_workflows` listesi de
+güncellenmeli, yoksa iş runner bulamaz:
+
+```sh
+gh api orgs/Virtus-digital/actions/runner-groups/3 --jq '.selected_workflows'
+```
+
+Dış katkıcıların PR'larında workflow'lar onaysız koşmuyor
+(`fork-pr-contributor-approval: all_external_contributors`).
+
 ## Güncelleme yordamı
 
 1. Upstream sürüm notlarını oku: <https://github.com/paperclipai/paperclip/releases>.

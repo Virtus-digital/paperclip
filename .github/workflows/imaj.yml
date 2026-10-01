@@ -24,11 +24,21 @@
 #   Deploy etiket + digest ile sabitledigi icin bir etiketin icerigi yerinde
 #   degismemeli.
 #
+# RUNNER: Virtus ARC, GitHub'in kendi runner'lari DEGIL (kullanici karari,
+#   2026-10-01). Bu repo public oldugu icin org'un ana ARC grubu ("Default")
+#   onu calistirmiyor; derleme kendi grubunda (`paperclip-imaj`) kendi scale
+#   set'inde kosuyor: deploy -> platform-fra/arc-runners-paperclip. Grup
+#   YALNIZ bu dosyaya, YALNIZ `refs/heads/virtus` uzerinden aciliyor
+#   (`restricted_to_workflows`); bu dosyanin adi ya da dali degisirse grubun
+#   `selected_workflows` listesi de degismeli, yoksa is runner bulamaz.
+#
 # Derleme adimlari upstream'in docker.yml'inden (v2026.916.1) alindi: kilit
-# dosyasi tazeleme, disk bosaltma, `--target production`, uc build-arg ve
-# sema etiketleri. Farklar: yalniz linux/amd64 (fra node'lari amd64), tek
-# is (manifest birlestirme yok), surum etiketten verilir (git describe
-# `upstream/` onekli etiketi `v*` desenine uydurmadigi icin bos donerdi).
+# dosyasi tazeleme, `--target production`, uc build-arg ve sema etiketleri.
+# Farklar: yalniz linux/amd64 (fra node'lari amd64), tek is (manifest
+# birlestirme yok), surum etiketten verilir (git describe `upstream/` onekli
+# etiketi `v*` desenine uydurmadigi icin bos donerdi), upstream'in "Free
+# runner disk" adimi YOK (GitHub runner'inin on kurulu araclarini siliyor;
+# ARC pod'u bos basliyor, disk siniri dind'in ephemeral-storage limiti).
 name: imaj
 
 on:
@@ -47,8 +57,9 @@ concurrency:
 
 jobs:
   derle:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: virtusdigital-arc-paperclip
+    # dind 3 CPU ile sinirli (upstream'in runner'i 4 vCPU); sure OLCULMEDI.
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -57,6 +68,19 @@ jobs:
       IMAJ: ghcr.io/virtus-digital/paperclip
       UPSTREAM: https://github.com/paperclipai/paperclip
     steps:
+      # ARC'de docker dind sidecar'indan geliyor; yoksa sebebi sidecar'in
+      # kendisi (privileged pod reddi, scale set sorunu). virtus-code-preview
+      # ci.yml'in `imaj` isindeki ayni yoklama.
+      - name: Docker var mi (yoklama)
+        run: |
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::error::Bu runner'da docker YOK (dind sidecar'i ayakta degil)."
+            exit 1
+          fi
+          docker version --format '{{.Server.Version}}' || {
+            echo "::error::docker istemcisi var ama sunucuya baglanamiyor."
+            exit 1; }
+
       - name: Girdiyi dogrula ve kaynagi coz
         id: kaynak
         run: |
@@ -142,25 +166,6 @@ jobs:
           fi
           echo "- kilit dosyasi: derleme baglaminda TAZELENDI (upstream deseni)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Free runner disk
-        run: |
-          set -euo pipefail
-          df -h /
-          pnpm store prune || true
-          sudo apt-get clean || true
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /usr/share/swift \
-            /usr/local/lib/android \
-            /usr/local/share/boost \
-            /usr/local/share/powershell \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /opt/hostedtoolcache/PyPy \
-            /opt/hostedtoolcache/Ruby || true
-          docker system prune -af || true
-          df -h /
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
@@ -194,6 +199,17 @@ jobs:
           push: true
           cache-from: type=registry,ref=${{ env.IMAJ }}:buildcache
           cache-to: type=registry,ref=${{ env.IMAJ }}:buildcache,mode=max
+
+      # Havuzun dind limitleri (8Gi bellek, 30Gi ephemeral) OLCULMEDEN kondu
+      # (deploy -> platform-fra/arc-runners-paperclip/values.yaml). Bu adim
+      # her kosuda tepe noktaya yakin degerleri basiyor; is dusse de kosar.
+      - name: Disk olcumu
+        if: always()
+        run: |
+          set +e
+          docker system df
+          docker buildx du 2>/dev/null | tail -3
+          df -h / /home/runner/_work 2>/dev/null
 
       - name: Ozet
         env:
